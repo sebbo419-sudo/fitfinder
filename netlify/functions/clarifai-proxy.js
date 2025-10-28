@@ -1,12 +1,15 @@
 // netlify/functions/clarifai-proxy.js
 const fetch = globalThis.fetch;
 
+// Midlertidig upload via imgbb (gratis, uden konto)
+const IMGBB_API = "https://api.imgbb.com/1/upload?key=bb5b1fc0aef8c27c841b5b1c2c5934d1";
+
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
 
-    // 1️⃣ Kald Clarifai for at finde tøjet
+    // 1️⃣ Få tøjtype fra Clarifai
     const clarifaiResp = await fetch("https://api.clarifai.com/v2/models/apparel-detection/outputs", {
       method: "POST",
       headers: {
@@ -15,38 +18,37 @@ export const handler = async (event) => {
       },
       body: JSON.stringify(body)
     });
-
     const clarifaiData = await clarifaiResp.json();
     const concepts = clarifaiData.outputs?.[0]?.data?.concepts || [];
     const best = concepts.sort((a, b) => b.value - a.value)[0];
     const apparel = best?.name || "tøj";
 
-    // 2️⃣ Prøv at hente en beskrivelse via Hugging Face’s base64 API
+    // 2️⃣ Upload billedet til imgbb for at få URL
     const base64 = body.inputs?.[0]?.data?.image?.base64;
-    let captionEn = null;
+    if (!base64) throw new Error("Intet billede fundet i forespørgslen");
+    const uploadResp = await fetch(IMGBB_API, {
+      method: "POST",
+      body: new URLSearchParams({ image: base64 })
+    });
+    const uploadData = await uploadResp.json();
+    const imageUrl = uploadData.data?.url;
+    if (!imageUrl) throw new Error("Kunne ikke uploade billede til imgbb");
 
-    if (base64) {
-      const hfResp = await fetch("https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          inputs: { image: base64 }
-        })
-      });
+    // 3️⃣ Send til Hugging Face BLIP for beskrivelse
+    const hfResp = await fetch("https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ inputs: imageUrl })
+    });
 
-      if (hfResp.ok) {
-        const hfData = await hfResp.json();
-        captionEn =
-          hfData?.[0]?.generated_text ||
-          hfData?.generated_text ||
-          null;
-      }
+    let caption = null;
+    if (hfResp.ok) {
+      const hfData = await hfResp.json();
+      caption = hfData?.[0]?.generated_text || hfData?.generated_text || null;
     }
 
-    // 3️⃣ Oversæt og pift beskrivelsen op
-    const finalDescription = await buildDescription(captionEn, apparel);
+    // 4️⃣ Oversæt og formater
+    const finalDescription = await buildDescription(caption, apparel);
 
     return {
       statusCode: 200,
@@ -62,33 +64,25 @@ export const handler = async (event) => {
   }
 };
 
-// 🧠 Funktion til at bygge en dansk, pæn beskrivelse
-async function buildDescription(captionEn, apparel) {
-  let text = captionEn;
+// 🧠 Oversæt og lav pæn modebeskrivelse
+async function buildDescription(caption, apparel) {
+  const fallback = [
+    "med moderne snit",
+    "i klassisk pasform",
+    "i stilrent design",
+    "med afslappet look",
+    "i tidløs stil"
+  ];
 
-  // Hvis modellen ikke returnerer noget, lav en naturlig fallback
-  if (!text || typeof text !== "string" || text.toLowerCase().includes("no")) {
-    const fallback = [
-      "med moderne snit",
-      "i afslappet pasform",
-      "i klassisk stil",
-      "med tidløst design",
-      "i minimalistisk look"
-    ];
-    const rand = fallback[Math.floor(Math.random() * fallback.length)];
-    return `${capitalize(apparel)} – ${rand}`;
+  if (!caption || caption.toLowerCase().includes("no")) {
+    return `${capitalize(apparel)} – ${fallback[Math.floor(Math.random() * fallback.length)]}`;
   }
 
-  // Oversæt automatisk til dansk
-  const translated = await translateToDanish(text);
-
-  // Rens og gør det modeagtigt
-  let clean = translated.replace(/et\s*billede\s*af/i, "").trim();
-  if (!clean.match(/[.!?]$/)) clean += ".";
-  return `${capitalize(apparel)} – ${clean}`;
+  const translated = await translateToDanish(caption);
+  return `${capitalize(apparel)} – ${translated.charAt(0).toLowerCase() + translated.slice(1)}`;
 }
 
-// Gratis oversættelse til dansk via MyMemory API
+// Gratis oversættelse
 async function translateToDanish(englishText) {
   try {
     const resp = await fetch(
@@ -103,7 +97,6 @@ async function translateToDanish(englishText) {
   }
 }
 
-// 🧩 Hjælpefunktioner
 function capitalize(str) {
   return str ? str.charAt(0).toUpperCase() + str.slice(1) : str;
 }
