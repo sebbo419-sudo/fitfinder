@@ -1,5 +1,5 @@
 // netlify/functions/clarifai-proxy.js
-import fetch from "node-fetch";
+const fetch = globalThis.fetch; // ✅ Bruger indbygget fetch (hurtigere og mere stabil)
 
 export const handler = async (event) => {
   try {
@@ -54,6 +54,7 @@ export const handler = async (event) => {
     // ---- 4️⃣ Gør den modeagtig og naturlig ----
     const styled = makeFashionDescription(translated, apparel);
 
+    // ---- 5️⃣ Svar tilbage til din hjemmeside ----
     return {
       statusCode: 200,
       headers: { "Access-Control-Allow-Origin": "*" },
