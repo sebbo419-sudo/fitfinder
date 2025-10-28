@@ -202,9 +202,7 @@
         const dark = adjustColor(colorHex, 0.6);
         colorBar.style.background = `linear-gradient(to right, ${light}, ${colorHex}, ${dark})`;
 
-        resultText.textContent = apparel !== "Ukendt"
-          ? `AI'en har fundet: ${dk} ${apparel}`
-          : "AI'en er usikker på tøjet – prøv et andet billede.";
+resultText.textContent = data.description || `AI'en har fundet: ${dk} ${apparel}`;
 
         card.style.display = "inline-flex";
       } catch (e) {
