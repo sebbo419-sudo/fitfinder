@@ -1,113 +1,158 @@
+// netlify/functions/clarifai-proxy.js
+import fetch from "node-fetch";
+
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
-
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
     const hfKey = process.env.HUGGINGFACE_API_KEY;
 
-    // 📸 Accepter både base64 og URL
-    const imageData =
-      body.inputs?.[0]?.data?.image?.base64 ||
-      body.inputs?.[0]?.data?.image?.url;
-
-    if (!imageData) {
-      return { statusCode: 400, body: JSON.stringify({ error: "Intet billede fundet" }) };
-    }
-
-    // 1️⃣ Find tøjtype via Clarifai
-    const clarifaiResp = await fetch(
-      "https://api.clarifai.com/v2/models/apparel-detection/outputs",
-      {
-        method: "POST",
-        headers: {
-          "Authorization": `Key ${clarifaiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ inputs: [{ data: { image: { base64: imageData } } }] }),
-      }
-    );
+    // ---- 1️⃣ Clarifai: tøjgenkendelse ----
+    const clarifaiResp = await fetch("https://api.clarifai.com/v2/models/apparel-detection/outputs", {
+      method: "POST",
+      headers: {
+        "Authorization": `Key ${clarifaiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(body)
+    });
 
     const clarifaiData = await clarifaiResp.json();
     const concepts = clarifaiData.outputs?.[0]?.data?.concepts || [];
     const best = concepts.sort((a, b) => b.value - a.value)[0];
-    const apparel = best?.name || "ukendt tøj";
+    const apparel = best?.name || "tøj";
 
-    // 2️⃣ Generér billedbeskrivelse (engelsk)
+    // ---- 2️⃣ Hugging Face: billedbeskrivelse ----
     const hfResp = await fetch(
       "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base",
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${hfKey}`,
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
-        body: JSON.stringify({ inputs: `data:image/jpeg;base64,${imageData}` }),
+        body: JSON.stringify(body)
       }
     );
 
-    const hfData = await hfResp.json();
-    const captionEn = hfData?.[0]?.generated_text || "no description found";
-
-    // 3️⃣ Oversæt til dansk
-    const translateResp = await fetch(
-      "https://api-inference.huggingface.co/models/Helsinki-NLP/opus-mt-en-da",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${hfKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ inputs: captionEn }),
+    let hfData = null;
+    let captionEn = "no description found";
+    try {
+      hfData = await hfResp.json();
+      if (Array.isArray(hfData) && hfData[0]?.generated_text) {
+        captionEn = hfData[0].generated_text;
+      } else if (hfData.error) {
+        console.error("HF API-fejl:", hfData.error);
       }
-    );
+    } catch (err) {
+      console.error("Kunne ikke parse Hugging Face JSON:", err);
+    }
 
-    const translateData = await translateResp.json();
-    const captionDa =
-      translateData?.[0]?.translation_text?.trim() || captionEn;
+    // ---- 3️⃣ Oversættelse til dansk ----
+    const translated = await translateToDanish(captionEn);
 
-    // 4️⃣ Forbedr tekst (modeskribent-stil)
-    const polishPrompt = `Omskriv følgende danske tøjbeskrivelse, så den lyder som en kort modeskribentbeskrivelse. Brug naturlig tone, fx “En marineblå striktrøje i afslappet pasform med rund hals.”:\n\n"${captionDa}"`;
-
-    const polishResp = await fetch(
-      "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${hfKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ inputs: polishPrompt }),
-      }
-    );
-
-    const polishData = await polishResp.json();
-    const polished =
-      polishData?.[0]?.generated_text?.trim() ||
-      captionDa.charAt(0).toUpperCase() + captionDa.slice(1);
-
-    // 5️⃣ Kombinér i slutresultat
-    const description = `${polished} (${apparel}).`;
+    // ---- 4️⃣ Gør den modeagtig og naturlig ----
+    const styled = makeFashionDescription(translated, apparel);
 
     return {
       statusCode: 200,
       headers: { "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({
         apparel,
-        description,
-        clarifaiRaw: concepts,
-        hfRaw: hfData,
-        translationRaw: translateData,
-        polishRaw: polishData,
-      }),
+        description: styled,
+        clarifai: concepts,
+        captionEn
+      })
     };
   } catch (err) {
     console.error("Fejl i proxy:", err);
     return {
       statusCode: 500,
-      body: JSON.stringify({
-        error: "Fejl i Clarifai/Hugging Face-proxyen",
-        details: err.message,
-      }),
+      body: JSON.stringify({ error: "Fejl i Clarifai-proxyen", details: err.message })
     };
   }
 };
+
+// ---- 🔤 Oversættelse via gratis API ----
+async function translateToDanish(englishText) {
+  if (!englishText) return "Ukendt tøjbeskrivelse";
+  try {
+    const resp = await fetch("https://api.mymemory.translated.net/get?q=" + encodeURIComponent(englishText) + "&langpair=en|da");
+    const data = await resp.json();
+    const translated = data.responseData?.translatedText || englishText;
+    return cleanupText(translated);
+  } catch {
+    return englishText;
+  }
+}
+
+// ---- 💅 Gør teksten levende og modeagtig ----
+function makeFashionDescription(text, apparel) {
+  const clean = text
+    .replace(/^en\s*person.*?iført/i, "")
+    .replace(/^et\s*billede\s*af/i, "")
+    .replace(/^en\s*billede\s*af/i, "")
+    .replace(/^\s*af\s*/i, "")
+    .replace(/\bholder\b.*$/i, "")
+    .trim();
+
+  // Grundlæggende sætning
+  let result = clean.charAt(0).toUpperCase() + clean.slice(1);
+  result = result.replace(/\.$/, "");
+
+  // Typiske modeforbedringer
+  const replacements = {
+    "trøje": "striktrøje",
+    "sweater": "striktrøje",
+    "shirt": "skjorte",
+    "t-shirt": "t-shirt",
+    "top": "bluse",
+    "hoodie": "hættebluse",
+    "jacket": "jakke",
+    "coat": "frakke",
+    "pants": "bukser"
+  };
+  for (const [eng, da] of Object.entries(replacements)) {
+    result = result.replace(new RegExp("\\b" + eng + "\\b", "gi"), da);
+  }
+
+  // Farvefornemmelse fra Clarifai
+  const colorHints = {
+    blue: "marineblå",
+    black: "sort",
+    white: "hvid",
+    red: "rød",
+    green: "grøn",
+    brown: "brun",
+    beige: "beige",
+    gray: "grå"
+  };
+  for (const [eng, da] of Object.entries(colorHints)) {
+    if (apparel.toLowerCase().includes(eng) && !result.toLowerCase().includes(da)) {
+      result = `${da} ${result}`;
+      break;
+    }
+  }
+
+  // Beskriv stil og pasform
+  const fits = ["i afslappet pasform", "i moderne snit", "til daglig brug", "med klassisk look"];
+  const fit = fits[Math.floor(Math.random() * fits.length)];
+
+  // Sammensæt den endelige sætning
+  if (!result.toLowerCase().includes("tøj")) {
+    result = result.replace(/^Et|En/i, "En");
+    if (!result.toLowerCase().includes("pasform")) result += " " + fit;
+  }
+
+  return result.trim() || "Et stykke tøj i stilren udførelse";
+}
+
+// ---- 🧼 Ryd op i oversættelser ----
+function cleanupText(text) {
+  return text
+    .replace(/\bEt billede af\b/i, "")
+    .replace(/\bEn person der\b/i, "")
+    .replace(/\biført\b/i, "")
+    .replace(/^,/, "")
+    .trim();
+}
