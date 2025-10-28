@@ -34,7 +34,7 @@ export const handler = async (event) => {
 
     // 2️⃣ Generér billedbeskrivelse (engelsk)
     const hfResp = await fetch(
-      "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large",
+      "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base",
       {
         method: "POST",
         headers: {
