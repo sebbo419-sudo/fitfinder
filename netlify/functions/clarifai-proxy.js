@@ -1,5 +1,4 @@
-// netlify/functions/clarifai-proxy.js
-import fetch from "node-fetch";
+import { fetch } from "undici";
 
 export const handler = async (event) => {
   try {

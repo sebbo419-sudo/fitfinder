@@ -19,6 +19,6 @@
   },
   "homepage": "https://github.com/Sebastiandkk/findfit-ai#readme",
   "dependencies": {
-    "node-fetch": "^3.3.2"
+    "undici": "^7.16.0"
   }
 }
