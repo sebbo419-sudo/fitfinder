@@ -1,13 +1,12 @@
 // netlify/functions/clarifai-proxy.js
-const fetch = globalThis.fetch; // ✅ Bruger indbygget fetch (hurtigere og mere stabil)
+const fetch = globalThis.fetch;
 
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
-    const hfKey = process.env.HUGGINGFACE_API_KEY;
 
-    // ---- 1️⃣ Clarifai: tøjgenkendelse ----
+    // 1️⃣ Analyser billedet med Clarifai
     const clarifaiResp = await fetch("https://api.clarifai.com/v2/models/apparel-detection/outputs", {
       method: "POST",
       headers: {
@@ -22,48 +21,36 @@ export const handler = async (event) => {
     const best = concepts.sort((a, b) => b.value - a.value)[0];
     const apparel = best?.name || "tøj";
 
-    // ---- 2️⃣ Hugging Face: billedbeskrivelse ----
+    // 2️⃣ Brug offentligt Hugging Face endpoint (ingen API-nøgle kræves)
+    const imageUrl = body.inputs?.[0]?.data?.image?.url;
     const hfResp = await fetch(
-      "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base",
+      "https://hf.space/embed/Salesforce/BLIP/+/api/predict",
       {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${hfKey}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: [imageUrl] })
       }
     );
 
-    let hfData = null;
-    let captionEn = "no description found";
-    try {
-      hfData = await hfResp.json();
-      if (Array.isArray(hfData) && hfData[0]?.generated_text) {
-        captionEn = hfData[0].generated_text;
-      } else if (hfData.error) {
-        console.error("HF API-fejl:", hfData.error);
+    let captionEn = "No description found";
+    if (hfResp.ok) {
+      const hfData = await hfResp.json();
+      // Hugging Face Spaces returnerer array under data[]
+      if (hfData.data && hfData.data[0]) {
+        captionEn = hfData.data[0];
       }
-    } catch (err) {
-      console.error("Kunne ikke parse Hugging Face JSON:", err);
     }
 
-    // ---- 3️⃣ Oversættelse til dansk ----
+    // 3️⃣ Oversæt til dansk
     const translated = await translateToDanish(captionEn);
 
-    // ---- 4️⃣ Gør den modeagtig og naturlig ----
+    // 4️⃣ Gør det pænt og modeagtigt
     const styled = makeFashionDescription(translated, apparel);
 
-    // ---- 5️⃣ Svar tilbage til din hjemmeside ----
     return {
       statusCode: 200,
       headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        apparel,
-        description: styled,
-        clarifai: concepts,
-        captionEn
-      })
+      body: JSON.stringify({ apparel, description: styled })
     };
   } catch (err) {
     console.error("Fejl i proxy:", err);
@@ -74,86 +61,32 @@ export const handler = async (event) => {
   }
 };
 
-// ---- 🔤 Oversættelse via gratis API ----
+// 🧠 Oversættelse (gratis API)
 async function translateToDanish(englishText) {
-  if (!englishText) return "Ukendt tøjbeskrivelse";
+  if (!englishText) return "Ukendt beskrivelse";
   try {
-    const resp = await fetch("https://api.mymemory.translated.net/get?q=" + encodeURIComponent(englishText) + "&langpair=en|da");
+    const resp = await fetch(
+      "https://api.mymemory.translated.net/get?q=" +
+        encodeURIComponent(englishText) +
+        "&langpair=en|da"
+    );
     const data = await resp.json();
-    const translated = data.responseData?.translatedText || englishText;
-    return cleanupText(translated);
+    return cleanupText(data.responseData?.translatedText || englishText);
   } catch {
     return englishText;
   }
 }
 
-// ---- 💅 Gør teksten levende og modeagtig ----
+// 💅 Modeagtig tekst
 function makeFashionDescription(text, apparel) {
-  const clean = text
-    .replace(/^en\s*person.*?iført/i, "")
-    .replace(/^et\s*billede\s*af/i, "")
-    .replace(/^en\s*billede\s*af/i, "")
-    .replace(/^\s*af\s*/i, "")
-    .replace(/\bholder\b.*$/i, "")
-    .trim();
-
-  // Grundlæggende sætning
-  let result = clean.charAt(0).toUpperCase() + clean.slice(1);
-  result = result.replace(/\.$/, "");
-
-  // Typiske modeforbedringer
-  const replacements = {
-    "trøje": "striktrøje",
-    "sweater": "striktrøje",
-    "shirt": "skjorte",
-    "t-shirt": "t-shirt",
-    "top": "bluse",
-    "hoodie": "hættebluse",
-    "jacket": "jakke",
-    "coat": "frakke",
-    "pants": "bukser"
-  };
-  for (const [eng, da] of Object.entries(replacements)) {
-    result = result.replace(new RegExp("\\b" + eng + "\\b", "gi"), da);
-  }
-
-  // Farvefornemmelse fra Clarifai
-  const colorHints = {
-    blue: "marineblå",
-    black: "sort",
-    white: "hvid",
-    red: "rød",
-    green: "grøn",
-    brown: "brun",
-    beige: "beige",
-    gray: "grå"
-  };
-  for (const [eng, da] of Object.entries(colorHints)) {
-    if (apparel.toLowerCase().includes(eng) && !result.toLowerCase().includes(da)) {
-      result = `${da} ${result}`;
-      break;
-    }
-  }
-
-  // Beskriv stil og pasform
-  const fits = ["i afslappet pasform", "i moderne snit", "til daglig brug", "med klassisk look"];
+  let t = text.toLowerCase().replace(/^en person.*iført/i, "").trim();
+  t = t.charAt(0).toUpperCase() + t.slice(1);
+  const fits = ["i afslappet pasform", "i klassisk stil", "med moderne snit", "i stilren udførelse"];
   const fit = fits[Math.floor(Math.random() * fits.length)];
-
-  // Sammensæt den endelige sætning
-  if (!result.toLowerCase().includes("tøj")) {
-    result = result.replace(/^Et|En/i, "En");
-    if (!result.toLowerCase().includes("pasform")) result += " " + fit;
-  }
-
-  return result.trim() || "Et stykke tøj i stilren udførelse";
+  return `${apparel.charAt(0).toUpperCase() + apparel.slice(1)} – ${t} ${fit}`;
 }
 
-// ---- 🧼 Ryd op i oversættelser ----
+// 🔤 Rens teksten
 function cleanupText(text) {
-  return text
-    .replace(/\bEt billede af\b/i, "")
-    .replace(/\bEn person der\b/i, "")
-    .replace(/\biført\b/i, "")
-    .replace(/^,/, "")
-    .trim();
+  return text.replace(/(et|en)\s*billede\s*af\s*/i, "").replace(/\.$/, "").trim();
 }
