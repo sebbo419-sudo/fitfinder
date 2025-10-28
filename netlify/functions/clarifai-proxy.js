@@ -1,67 +1,108 @@
-import fetch from "node-fetch";
-
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
+
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
     const hfKey = process.env.HUGGINGFACE_API_KEY;
 
-    // 1️⃣ Først: få tøjet fra Clarifai
-    const clarifaiResp = await fetch("https://api.clarifai.com/v2/models/apparel-detection/outputs", {
-      method: "POST",
-      headers: {
-        "Authorization": `Key ${clarifaiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    });
+    const imageUrl = body.inputs?.[0]?.data?.image?.url;
+    if (!imageUrl) {
+      return { statusCode: 400, body: JSON.stringify({ error: "Intet billede fundet" }) };
+    }
+
+    // 1️⃣ Find tøjtype via Clarifai
+    const clarifaiResp = await fetch(
+      "https://api.clarifai.com/v2/models/apparel-detection/outputs",
+      {
+        method: "POST",
+        headers: {
+          "Authorization": `Key ${clarifaiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
 
     const clarifaiData = await clarifaiResp.json();
     const concepts = clarifaiData.outputs?.[0]?.data?.concepts || [];
     const best = concepts.sort((a, b) => b.value - a.value)[0];
-    const apparel = best?.name || "Ukendt tøj";
-    const confidence = Math.round((best?.value || 0) * 100);
+    const apparel = best?.name || "ukendt tøj";
 
-    // 2️⃣ Dernæst: generér tekstbeskrivelse via Hugging Face (BLIP-2)
-    const base64 = body.inputs?.[0]?.data?.image?.base64;
-    let description = "Et stykke tøj";
-
-    if (hfKey && base64) {
-      const imgBytes = Buffer.from(base64, "base64");
-      const hfResp = await fetch(
-        "https://api-inference.huggingface.co/models/Salesforce/blip2-flan-t5-xl",
-        {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${hfKey}`,
-            "Content-Type": "application/octet-stream",
-          },
-          body: imgBytes,
-        }
-      );
-
-      const hfData = await hfResp.json();
-      if (Array.isArray(hfData) && hfData[0]?.generated_text) {
-        description = hfData[0].generated_text;
+    // 2️⃣ Generér billedbeskrivelse (engelsk)
+    const hfResp = await fetch(
+      "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${hfKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ inputs: imageUrl }),
       }
-    }
+    );
 
-    // 3️⃣ Returnér samlet resultat
+    const hfData = await hfResp.json();
+    const captionEn = hfData?.[0]?.generated_text || "no description found";
+
+    // 3️⃣ Oversæt til dansk
+    const translateResp = await fetch(
+      "https://api-inference.huggingface.co/models/Helsinki-NLP/opus-mt-en-da",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${hfKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ inputs: captionEn }),
+      }
+    );
+
+    const translateData = await translateResp.json();
+    const captionDa =
+      translateData?.[0]?.translation_text?.trim() || captionEn;
+
+    // 4️⃣ Forbedr teksten med en dansk "modeskribent-stil"
+    const polishPrompt = `Omskriv følgende danske tøjbeskrivelse, så den lyder som en kort, flydende modeskribentbeskrivelse. Brug naturlig tone, fx “En marineblå striktrøje i afslappet pasform med rund hals.”:\n\n"${captionDa}"`;
+
+    const polishResp = await fetch(
+      "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${hfKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ inputs: polishPrompt }),
+      }
+    );
+
+    const polishData = await polishResp.json();
+    const polished =
+      polishData?.[0]?.generated_text?.trim() ||
+      captionDa.charAt(0).toUpperCase() + captionDa.slice(1);
+
+    const description = `${polished} (${apparel}).`;
+
     return {
       statusCode: 200,
       headers: { "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({
         apparel,
-        confidence,
-        description, // 💬 tekst fra Hugging Face
-        raw: concepts
-      })
+        description,
+        clarifaiRaw: concepts,
+        hfRaw: hfData,
+        translationRaw: translateData,
+        polishRaw: polishData,
+      }),
     };
   } catch (err) {
     console.error("Fejl i proxy:", err);
     return {
       statusCode: 500,
-      body: JSON.stringify({ error: "Fejl i proxy-funktion", details: err.message })
+      body: JSON.stringify({
+        error: "Fejl i Clarifai/Hugging Face-proxyen",
+        details: err.message,
+      }),
     };
   }
 };

@@ -7,67 +7,114 @@
   <style>
     body {
       font-family: system-ui, sans-serif;
-      background-color: #f3f3f3;
+      background-color: #f6f6f6;
       color: #111;
       text-align: center;
       padding: 2rem;
     }
 
-    h1 { font-size: 2rem; margin-bottom: 0.25rem; }
-    p  { color: #333; margin-top: 0; }
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 0.25rem;
+    }
 
-    input[type="file"] { margin: 1rem 0; }
+    p {
+      color: #333;
+      margin-top: 0;
+    }
+
+    input[type="file"] {
+      margin: 1rem 0;
+    }
 
     button {
-      background: black; color: white;
-      padding: 0.5rem 1.2rem; border: none; border-radius: 8px;
-      cursor: pointer; font-size: 1rem;
+      background: black;
+      color: white;
+      padding: 0.6rem 1.4rem;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+      transition: background 0.2s;
     }
-    button:hover { background: #222; }
+
+    button:hover {
+      background: #222;
+    }
 
     #preview img {
-      margin-top: 1rem; border-radius: 10px; max-width: 220px; height: auto;
+      margin-top: 1rem;
+      border-radius: 10px;
+      max-width: 240px;
+      height: auto;
       box-shadow: 0 3px 10px rgba(0,0,0,0.1);
     }
 
     #card {
-      margin-top: 1.5rem; display: none; background: white;
-      padding: 1rem 1.5rem; border-radius: 12px; display: inline-flex;
-      align-items: center; box-shadow: 0 3px 8px rgba(0,0,0,0.1);
-      flex-direction: column; gap: 8px;
-      animation: fadeIn 240ms ease;
+      margin-top: 1.5rem;
+      display: none;
+      background: white;
+      padding: 1.2rem 1.5rem;
+      border-radius: 12px;
+      display: inline-block;
+      text-align: left;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.1);
+      animation: fadeIn 0.5s ease-in-out forwards;
+      max-width: 280px;
     }
 
     #dot {
-      display: inline-block; width: 16px; height: 16px; border-radius: 50%;
-      margin-right: 8px; border: 1px solid #ccc;
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      margin-right: 8px;
+      border: 1px solid #ccc;
+      vertical-align: middle;
     }
 
-    #colorRow { display:flex; align-items:center; gap:8px; }
+    #resultText {
+      font-size: 1rem;
+      margin-top: 0.5rem;
+      text-align: left;
+      line-height: 1.5;
+      color: #222;
+      white-space: pre-line;
+    }
 
-    #colorBar {
-      margin-top: 6px; width: 180px; height: 16px; border-radius: 10px;
-      border: 1px solid #ddd; background: linear-gradient(to right, #ccc, #999, #666);
-      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+    #loading {
+      font-style: italic;
+      margin-top: 0.5rem;
+      color: #555;
     }
 
     #aiBarContainer {
-      width: 220px; height: 10px; background: #ddd; border-radius: 10px;
-      margin: 1rem auto; overflow: hidden; display: none;
+      width: 240px;
+      height: 10px;
+      background: #ddd;
+      border-radius: 10px;
+      margin: 1rem auto;
+      overflow: hidden;
+      display: none;
     }
-    #aiBar {
-      height: 100%; width: 0%;
-      background: linear-gradient(90deg, #007aff, #00c853);
-      border-radius: 10px; transition: width 0.4s ease;
-    }
-    #loading { font-style: italic; margin-top: 0.5rem; }
 
-    @keyframes fadeIn { from{opacity:0; transform:translateY(4px)} to{opacity:1; transform:translateY(0)} }
+    #aiBar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #007aff, #00c853);
+      border-radius: 10px;
+      transition: width 0.4s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(5px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
   </style>
 </head>
 <body>
   <h1>FindFit 👕</h1>
-  <p>Upload et billede af et stykke tøj – AI’en gætter type og farve.</p>
+  <p>Upload et billede af et stykke tøj – AI’en beskriver det for dig.</p>
 
   <input type="file" id="imageInput" accept="image/*">
   <br>
@@ -82,11 +129,8 @@
   <p id="loading"></p>
 
   <div id="card">
-    <div id="colorRow">
-      <span id="dot"></span>
-      <span id="resultText"></span>
-    </div>
-    <div id="colorBar"></div>
+    <span id="dot"></span>
+    <p id="resultText"></p>
   </div>
 
   <canvas id="work" style="display:none;"></canvas>
@@ -100,11 +144,9 @@
     const loadingEl = document.getElementById("loading");
     const card = document.getElementById("card");
     const dot = document.getElementById("dot");
-    const colorBar = document.getElementById("colorBar");
+    const resultText = document.getElementById("resultText");
     const aiBarContainer = document.getElementById("aiBarContainer");
     const aiBar = document.getElementById("aiBar");
-    const work = document.getElementById("work");
-    const resultText = document.getElementById("resultText");
 
     imageInput.addEventListener("change", () => {
       const f = imageInput.files[0];
@@ -137,42 +179,26 @@
       }, 400);
 
       try {
-        // Først: vi kalder proxy UDEN farven (vi kender den ikke endnu)
         const resp = await fetch("/.netlify/functions/clarifai-proxy", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ inputs:[{ data:{ image:{ base64 } } }] })
+          body: JSON.stringify({ inputs: [{ data: { image: { base64 } } }] }),
         });
-        const data = await resp.json();
 
-        // Stop progress
+        const data = await resp.json();
         clearInterval(progress);
         aiBar.style.width = "100%";
-        setTimeout(() => aiBarContainer.style.display = "none", 500);
+        setTimeout(() => aiBarContainer.style.display = "none", 600);
         loadingEl.textContent = "";
 
-        // Hent bounding box hvis mulig
-        const region = data.outputs?.[0]?.data?.regions?.[0]?.region_info?.bounding_box;
-        const box = region || { left_col: 0, top_row: 0, right_col: 1, bottom_row: 1 };
+        if (!data.description) {
+          resultText.textContent = "AI'en kunne ikke beskrive tøjet.";
+        } else {
+          resultText.textContent = data.description;
+        }
 
-        // Lokal farvedetektion
-        const { name: colorNameRaw, hex: colorHex, brightness } = await detectDominantColorSmart(imgEl, box);
-        const tone = brightness < 90 ? "mørk" : brightness > 180 ? "lys" : null;
-        const colorDk = toDanishColor(tone ? `${tone} ${colorNameRaw}` : colorNameRaw);
-        dot.style.background = colorHex;
-        const light = adjustColor(colorHex, 1.4);
-        const dark  = adjustColor(colorHex, 0.6);
-        colorBar.style.background = `linear-gradient(to right, ${light}, ${colorHex}, ${dark})`;
-
-        // Hugging Face-tekst (engelsk) + Clarifai apparel
-        const apparel = (data.apparel || data.raw?.[0]?.name || "tøj").toLowerCase();
-        const hfText = (data.description || "").toString();
-
-        // Oversæt/normalisér til dansk og injicer vores farve
-        const finalSentence = buildDanishSentence(hfText, colorDk, apparel);
-
-        resultText.textContent = finalSentence || `AI'en har fundet: ${colorDk} ${apparel}`;
-        card.style.display = "inline-flex";
+        dot.style.background = "#999";
+        card.style.display = "inline-block";
       } catch (e) {
         console.error(e);
         clearInterval(progress);
@@ -189,173 +215,6 @@
         r.readAsDataURL(file);
       });
     }
-
-    // ====== Farvedetektion (lokal) ======
-    async function detectDominantColorSmart(img, box) {
-      const cw = img.naturalWidth, ch = img.naturalHeight;
-      const x = Math.max(0, Math.floor(box.left_col * cw));
-      const y = Math.max(0, Math.floor(box.top_row  * ch));
-      const w = Math.max(1, Math.floor((box.right_col - box.left_col) * cw));
-      const h = Math.max(1, Math.floor((box.bottom_row - box.top_row) * ch));
-
-      const ctx = work.getContext("2d");
-      work.width = w; work.height = h;
-      ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
-      const { data } = ctx.getImageData(0, 0, w, h);
-
-      const hist = {};
-      const step = 4 * 3;
-      let totalBrightness = 0, pixels = 0;
-
-      for (let i = 0; i < data.length; i += step) {
-        const R = data[i], G = data[i+1], B = data[i+2];
-        const brightness = 0.2126*R + 0.7152*G + 0.0722*B;
-        totalBrightness += brightness; pixels++;
-        if (brightness < 25 || brightness > 240) continue;
-        const [r,g,b] = enhanceSaturation(R,G,B);
-        const key = `${Math.round(r/16)},${Math.round(g/16)},${Math.round(b/16)}`;
-        hist[key] = (hist[key] || 0) + 1;
-      }
-
-      const top = Object.entries(hist).sort((a,b) => b[1]-a[1])[0];
-      let r=120,g=120,b=120;
-      if (top) [r,g,b] = top[0].split(",").map(v=>parseInt(v)*16+8);
-
-      const { name, hex } = nearestNamedColor(r,g,b);
-      const avgBrightness = totalBrightness / pixels;
-      return { name, hex, brightness: avgBrightness };
-    }
-
-    function enhanceSaturation(r,g,b) {
-      const avg = (r+g+b)/3, factor = 1.25;
-      r = Math.min(255, avg + (r-avg)*factor);
-      g = Math.min(255, avg + (g-avg)*factor);
-      b = Math.min(255, avg + (b-avg)*factor);
-      return [r,g,b];
-    }
-    function adjustColor(hex, factor) {
-      const [r,g,b] = hex.match(/\w\w/g).map(x=>parseInt(x,16));
-      const nr = Math.min(255, r*factor), ng = Math.min(255, g*factor), nb = Math.min(255, b*factor);
-      return rgbToHex(nr,ng,nb);
-    }
-    function rgbToHex(r,g,b){return"#"+[r,g,b].map(x=>Math.round(x).toString(16).padStart(2,"0")).join("");}
-
-    const COLOR_PALETTE = [
-      ["black",[0,0,0]],["white",[255,255,255]],["gray",[128,128,128]],["light gray",[200,200,200]],
-      ["navy",[0,38,77]],["blue",[30,90,200]],["royal blue",[65,105,225]],["sky blue",[135,206,235]],
-      ["teal",[0,128,128]],["green",[34,139,34]],["lime",[150,205,50]],["olive",[107,142,35]],
-      ["brown",[120,72,35]],["tan",[210,180,140]],["beige",[220,208,186]],
-      ["red",[200,40,40]],["maroon",[128,0,0]],["orange",[240,140,30]],["gold",[218,165,32]],
-      ["yellow",[245,220,70]],["pink",[255,182,193]],["magenta",[255,0,255]],["purple",[128,0,128]]
-    ];
-    function nearestNamedColor(r,g,b) {
-      let best=Infinity,bestName="gray",bestHex="#808080";
-      for (const [name,[R,G,B]] of COLOR_PALETTE) {
-        const d=(R-r)**2+(G-g)**2+(B-b)**2;
-        if (d<best){best=d;bestName=name;bestHex=rgbToHex(R,G,B);}
-      }
-      return {name:bestName,hex:bestHex};
-    }
-    function toDanishColor(en) {
-      const map = {
-        "black":"sort","white":"hvid","gray":"grå","light gray":"lysegrå",
-        "navy":"marineblå","blue":"blå","royal blue":"kongeblå","sky blue":"himmelblå",
-        "teal":"teal","green":"grøn","lime":"limegrøn","olive":"olivengrøn",
-        "brown":"brun","tan":"sandfarvet","beige":"beige",
-        "red":"rød","maroon":"bordeaux","orange":"orange","gold":"gylden",
-        "yellow":"gul","pink":"lyserød","magenta":"magenta","purple":"lilla"
-      };
-      return map[en] || en;
-    }
-
-    // ====== Oversættelse + sætning ======
-    function buildDanishSentence(hfText, dkColor, apparelHint) {
-      const text = (hfText || "").toLowerCase().trim();
-
-      // Simple “tom” outputs fra modellen → fallback
-      const isEmpty = !text || /^(a|an)\s(piece|photo|image)/.test(text);
-      if (isEmpty) {
-        const appDa = translateWord(apparelHint || "tøj", APPAREL_MAP);
-        return capitalize(`${dkColor} ${appDa}`);
-      }
-
-      // Oversæt engelske ord/fraser til dansk
-      let t = text;
-      t = replacePhrases(t, COLOR_MAP);
-      t = replacePhrases(t, APPAREL_MAP);
-      t = replacePhrases(t, FIT_MAP);
-      t = replacePhrases(t, NECKLINE_MAP);
-      t = replacePhrases(t, MATERIAL_MAP);
-
-      // Fjern evt. "with", "and" som hænger tilbage i enden
-      t = t.replace(/\bwith\b/g, "med").replace(/\band\b/g, "og");
-
-      // Indsæt vores sikre farve, hvis den ikke allerede er med
-      if (dkColor && !new RegExp(`\\b${escapeRegExp(dkColor)}\\b`).test(t)) {
-        // Prøv at sætte den i starten, foran tøjord
-        const appDa = translateWord(apparelHint || "tøj", APPAREL_MAP);
-        if (/^(en|et)\s/.test(t)) {
-          // “en …” → “en marineblå …”
-          t = t.replace(/^(en|et)\s+/,
-                        (m)=>`${m}${dkColor} `);
-        } else {
-          t = `${dkColor} ${appDa} – ${t}`;
-        }
-      }
-
-      // Ryd op i dobbeltmellemrum og bindestreger
-      t = t.replace(/\s{2,}/g, " ").replace(/\s–\s+/g," – ");
-
-      // Start med stort
-      return capitalize(t);
-    }
-
-    function replacePhrases(text, dict) {
-      // match længste fraser først
-      const keys = Object.keys(dict).sort((a,b)=>b.length-a.length);
-      let out = text;
-      for (const k of keys) {
-        const re = new RegExp(`\\b${escapeRegExp(k)}\\b`, "g");
-        out = out.replace(re, dict[k]);
-      }
-      return out;
-    }
-    function translateWord(word, dict) {
-      const w = (word||"").toLowerCase();
-      return dict[w] || w;
-    }
-    function escapeRegExp(s){return s.replace(/[.*+?^${}()|[\]\\]/g,"\\$&");}
-    function capitalize(s){return s.charAt(0).toUpperCase()+s.slice(1);}
-
-    // Ordbøger (engelsk → dansk)
-    const COLOR_MAP = {
-      "navy blue":"marineblå","dark blue":"mørk blå","light blue":"lyseblå",
-      "royal blue":"kongeblå","sky blue":"himmelblå","blue":"blå",
-      "black":"sort","white":"hvid","gray":"grå","grey":"grå","light gray":"lysegrå","light grey":"lysegrå",
-      "green":"grøn","dark green":"mørk grøn","olive":"olivengrøn","lime":"limegrøn",
-      "red":"rød","burgundy":"bordeaux","maroon":"bordeaux","pink":"lyserød",
-      "purple":"lilla","orange":"orange","yellow":"gul","beige":"beige",
-      "brown":"brun","tan":"sandfarvet","gold":"gylden","silver":"sølv"
-    };
-    const APPAREL_MAP = {
-      "sweater":"striktrøje","sweatshirt":"sweatshirt","hoodie":"hættetrøje","cardigan":"cardigan",
-      "t-shirt":"t-shirt","tee":"t-shirt","shirt":"skjorte","polo":"polo","blazer":"blazer",
-      "coat":"frakke","jacket":"jakke","dress":"kjole","skirt":"nederdel",
-      "jeans":"jeans","trousers":"bukser","pants":"bukser","shorts":"shorts",
-      "hat":"hat","beanie":"hue","tunic":"tunika","blouse":"bluse"
-    };
-    const FIT_MAP = {
-      "oversized":"oversized","relaxed fit":"afslappet pasform","loose fit":"løs pasform",
-      "regular fit":"regular fit","slim fit":"slim fit","fitted":"tætsiddende"
-    };
-    const NECKLINE_MAP = {
-      "crew neck":"rund hals","v-neck":"v-udskæring","v neck":"v-udskæring",
-      "turtleneck":"rullekrave","mock neck":"høj hals","collar":"krave"
-    };
-    const MATERIAL_MAP = {
-      "cotton":"bomuld","wool":"uld","knit":"strik","denim":"denim",
-      "leather":"læder","linen":"hør","polyester":"polyester","silk":"silke"
-    };
   });
   </script>
 </body>
