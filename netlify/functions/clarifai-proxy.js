@@ -6,16 +6,15 @@ export const handler = async (event) => {
     const body = JSON.parse(event.body || "{}");
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
 
-    // Bruger Clarifais "apparel-recognition" model
     const resp = await fetch(
       "https://api.clarifai.com/v2/models/apparel-recognition/versions/dc2cd6d9bff5425a80bfe0c4105583c1/outputs",
       {
         method: "POST",
         headers: {
           "Authorization": `Key ${clarifaiKey}`,
-          "Content-Type": "application/json",
+          "Content-Type": "application/json"
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify(body)
       }
     );
 
@@ -29,21 +28,13 @@ export const handler = async (event) => {
     return {
       statusCode: 200,
       headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        apparel,
-        confidence,
-        raw: concepts, // sender hele listen videre (valgfrit)
-        outputs: data.outputs,
-      }),
+      body: JSON.stringify({ apparel, confidence, raw: concepts, outputs: data.outputs })
     };
   } catch (err) {
     console.error("Clarifai fejl:", err);
     return {
       statusCode: 500,
-      body: JSON.stringify({
-        error: "Fejl i Clarifai-proxyen",
-        details: err.message,
-      }),
+      body: JSON.stringify({ error: "Fejl i Clarifai-proxyen", details: err.message })
     };
   }
 };
