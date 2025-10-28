@@ -5,8 +5,12 @@ export const handler = async (event) => {
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
     const hfKey = process.env.HUGGINGFACE_API_KEY;
 
-    const imageUrl = body.inputs?.[0]?.data?.image?.url;
-    if (!imageUrl) {
+    // 📸 Accepter både base64 og URL
+    const imageData =
+      body.inputs?.[0]?.data?.image?.base64 ||
+      body.inputs?.[0]?.data?.image?.url;
+
+    if (!imageData) {
       return { statusCode: 400, body: JSON.stringify({ error: "Intet billede fundet" }) };
     }
 
@@ -19,7 +23,7 @@ export const handler = async (event) => {
           "Authorization": `Key ${clarifaiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ inputs: [{ data: { image: { base64: imageData } } }] }),
       }
     );
 
@@ -37,7 +41,7 @@ export const handler = async (event) => {
           Authorization: `Bearer ${hfKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ inputs: imageUrl }),
+        body: JSON.stringify({ inputs: `data:image/jpeg;base64,${imageData}` }),
       }
     );
 
@@ -61,8 +65,8 @@ export const handler = async (event) => {
     const captionDa =
       translateData?.[0]?.translation_text?.trim() || captionEn;
 
-    // 4️⃣ Forbedr teksten med en dansk "modeskribent-stil"
-    const polishPrompt = `Omskriv følgende danske tøjbeskrivelse, så den lyder som en kort, flydende modeskribentbeskrivelse. Brug naturlig tone, fx “En marineblå striktrøje i afslappet pasform med rund hals.”:\n\n"${captionDa}"`;
+    // 4️⃣ Forbedr tekst (modeskribent-stil)
+    const polishPrompt = `Omskriv følgende danske tøjbeskrivelse, så den lyder som en kort modeskribentbeskrivelse. Brug naturlig tone, fx “En marineblå striktrøje i afslappet pasform med rund hals.”:\n\n"${captionDa}"`;
 
     const polishResp = await fetch(
       "https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2",
@@ -81,6 +85,7 @@ export const handler = async (event) => {
       polishData?.[0]?.generated_text?.trim() ||
       captionDa.charAt(0).toUpperCase() + captionDa.slice(1);
 
+    // 5️⃣ Kombinér i slutresultat
     const description = `${polished} (${apparel}).`;
 
     return {
