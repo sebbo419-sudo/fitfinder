@@ -98,45 +98,9 @@
       transition: width 0.4s ease;
     }
 
-    #infoBox {
-      margin-top: 0.5rem;
-      display: none;
-      background: #fff;
-      border-radius: 8px;
-      padding: 0.5rem 1rem;
-      width: fit-content;
-      margin-left: auto;
-      margin-right: auto;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.1);
-      text-align: left;
-    }
-
-    #infoButton {
-      background: none;
-      border: none;
-      cursor: pointer;
-      font-size: 1rem;
-      color: #555;
-      margin-top: 0.25rem;
-    }
-
     #loading {
       font-style: italic;
       margin-top: 0.5rem;
-    }
-
-    select {
-      margin-top: 0.5rem;
-      padding: 0.3rem;
-      border-radius: 6px;
-      border: 1px solid #ccc;
-      font-size: 0.9rem;
-      cursor: pointer;
-    }
-
-    ul {
-      list-style: disc;
-      margin-left: 1.2rem;
     }
   </style>
 </head>
@@ -164,14 +128,6 @@
     <div id="colorBar"></div>
   </div>
 
-  <button id="infoButton" style="display:none;">ℹ️ Mere info</button>
-
-  <div id="infoBox">
-    <p id="infoDetails"></p>
-    <label for="altSelect"><b>Vælg den, der passer bedst:</b></label><br>
-    <select id="altSelect"></select>
-  </div>
-
   <canvas id="work" style="display:none;"></canvas>
 
   <script>
@@ -184,13 +140,10 @@
     const card = document.getElementById("card");
     const dot = document.getElementById("dot");
     const colorBar = document.getElementById("colorBar");
-    const infoButton = document.getElementById("infoButton");
-    const infoBox = document.getElementById("infoBox");
-    const infoDetails = document.getElementById("infoDetails");
-    const altSelect = document.getElementById("altSelect");
     const aiBarContainer = document.getElementById("aiBarContainer");
     const aiBar = document.getElementById("aiBar");
     const work = document.getElementById("work");
+    const resultText = document.getElementById("resultText");
 
     imageInput.addEventListener("change", () => {
       const f = imageInput.files[0];
@@ -212,8 +165,6 @@
 
       const base64 = await readAsBase64(file);
       card.style.display = "none";
-      infoBox.style.display = "none";
-      infoButton.style.display = "none";
       loadingEl.textContent = "🔍 AI’en analyserer billedet...";
       aiBarContainer.style.display = "block";
       aiBar.style.width = "0%";
@@ -237,12 +188,10 @@
         loadingEl.textContent = "";
 
         const apparel = data.apparel || data.outputs?.[0]?.data?.concepts?.[0]?.name || "Ukendt";
-        const confidence = data.confidence || Math.round((data.outputs?.[0]?.data?.concepts?.[0]?.value || 0) * 100);
-        const altConcepts = data.raw || [];
         const region = data.outputs?.[0]?.data?.regions?.[0]?.region_info?.bounding_box;
         const box = region || { left_col: 0, top_row: 0, right_col: 1, bottom_row: 1 };
 
-        const { name: colorNameRaw, hex: colorHex, brightness, confidence: colorConfidence } = await detectDominantColorSmart(imgEl, box);
+        const { name: colorNameRaw, hex: colorHex, brightness } = await detectDominantColorSmart(imgEl, box);
 
         const tone = brightness < 90 ? "mørk" : brightness > 180 ? "lys" : null;
         const colorName = tone ? `${tone} ${colorNameRaw}` : colorNameRaw;
@@ -253,45 +202,11 @@
         const dark = adjustColor(colorHex, 0.6);
         colorBar.style.background = `linear-gradient(to right, ${light}, ${colorHex}, ${dark})`;
 
-        // Hovedresultat
         resultText.textContent = apparel !== "Ukendt"
           ? `AI'en har fundet: ${dk} ${apparel}`
           : "AI'en er usikker på tøjet – prøv et andet billede.";
 
-        // Udfyld dropdown med alternativer
-        altSelect.innerHTML = "";
-        altConcepts.slice(0, 3).forEach(c => {
-          const opt = document.createElement("option");
-          opt.value = c.name;
-          opt.textContent = `${c.name} (${Math.round(c.value * 100)}%)`;
-          if (c.name === apparel) opt.selected = true;
-          altSelect.appendChild(opt);
-        });
-
-        // Info-boks
-        const topList = altConcepts
-          .slice(0, 3)
-          .map(c => `<li>${c.name} – ${Math.round(c.value * 100)}%</li>`)
-          .join("");
-
-        infoDetails.innerHTML = `
-          <b>Tøjtype:</b> ${apparel}<br>
-          <b>Farve:</b> ${dk}<br>
-          <b>Tøjkonfidens:</b> ${confidence}%<br>
-          <b>Farvekonfidens:</b> ${colorConfidence}%<br><br>
-          <b>Andre forslag:</b>
-          <ul>${topList || "<li>Ingen yderligere forslag</li>"}</ul>
-        `;
-
         card.style.display = "inline-flex";
-        infoButton.style.display = "block";
-        infoBox.style.display = "block";
-
-        altSelect.addEventListener("change", () => {
-          const selected = altSelect.value;
-          resultText.textContent = `AI'en (og du) har valgt: ${dk} ${selected}`;
-        });
-
       } catch (e) {
         console.error(e);
         clearInterval(progress);
@@ -312,7 +227,7 @@
     async function detectDominantColorSmart(img, box) {
       const cw = img.naturalWidth, ch = img.naturalHeight;
       const x = Math.max(0, Math.floor(box.left_col * cw));
-      const y = Math.max(0, Math.floor(box.top_row  * ch));
+      const y = Math.max(0, Math.floor(box.top_row * ch));
       const w = Math.max(1, Math.floor((box.right_col - box.left_col) * cw));
       const h = Math.max(1, Math.floor((box.bottom_row - box.top_row) * ch));
 
@@ -327,71 +242,72 @@
       let totalBrightness = 0, pixels = 0;
 
       for (let i = 0; i < data.length; i += step) {
-        const R = data[i], G = data[i+1], B = data[i+2];
-        const brightness = 0.2126*R + 0.7152*G + 0.0722*B;
-        totalBrightness += brightness; pixels++;
+        const R = data[i], G = data[i + 1], B = data[i + 2];
+        const brightness = 0.2126 * R + 0.7152 * G + 0.0722 * B;
+        totalBrightness += brightness;
+        pixels++;
         if (brightness < 25 || brightness > 240) continue;
-        const [r,g,b] = enhanceSaturation(R,G,B);
-        const key = `${Math.round(r/16)},${Math.round(g/16)},${Math.round(b/16)}`;
+        const [r, g, b] = enhanceSaturation(R, G, B);
+        const key = `${Math.round(r / 16)},${Math.round(g / 16)},${Math.round(b / 16)}`;
         hist[key] = (hist[key] || 0) + 1;
       }
 
-      const top = Object.entries(hist).sort((a,b) => b[1]-a[1])[0];
-      let r=120,g=120,b=120;
-      if (top) [r,g,b] = top[0].split(",").map(v=>parseInt(v)*16+8);
+      const top = Object.entries(hist).sort((a, b) => b[1] - a[1])[0];
+      let r = 120, g = 120, b = 120;
+      if (top) [r, g, b] = top[0].split(",").map(v => parseInt(v) * 16 + 8);
 
-      const { name, hex } = nearestNamedColor(r,g,b);
+      const { name, hex } = nearestNamedColor(r, g, b);
       const avgBrightness = totalBrightness / pixels;
-      const colorConfidence = top ? Math.min(100, Math.round((top[1] / pixels) * 1000)) : 0;
-
-      return { name, hex, brightness: avgBrightness, confidence: colorConfidence };
+      return { name, hex, brightness: avgBrightness };
     }
 
-    function enhanceSaturation(r,g,b) {
-      const avg = (r+g+b)/3;
+    function enhanceSaturation(r, g, b) {
+      const avg = (r + g + b) / 3;
       const factor = 1.25;
-      r = Math.min(255, avg + (r-avg)*factor);
-      g = Math.min(255, avg + (g-avg)*factor);
-      b = Math.min(255, avg + (b-avg)*factor);
-      return [r,g,b];
+      r = Math.min(255, avg + (r - avg) * factor);
+      g = Math.min(255, avg + (g - avg) * factor);
+      b = Math.min(255, avg + (b - avg) * factor);
+      return [r, g, b];
     }
 
     function adjustColor(hex, factor) {
-      const [r,g,b] = hex.match(/\w\w/g).map(x=>parseInt(x,16));
-      const nr = Math.min(255, r*factor);
-      const ng = Math.min(255, g*factor);
-      const nb = Math.min(255, b*factor);
-      return rgbToHex(nr,ng,nb);
+      const [r, g, b] = hex.match(/\w\w/g).map(x => parseInt(x, 16));
+      const nr = Math.min(255, r * factor);
+      const ng = Math.min(255, g * factor);
+      const nb = Math.min(255, b * factor);
+      return rgbToHex(nr, ng, nb);
     }
 
     const COLOR_PALETTE = [
-      ["black",[0,0,0]],["white",[255,255,255]],["gray",[128,128,128]],["light gray",[200,200,200]],
-      ["navy",[0,38,77]],["blue",[30,90,200]],["royal blue",[65,105,225]],["sky blue",[135,206,235]],
-      ["teal",[0,128,128]],["green",[34,139,34]],["lime",[150,205,50]],["olive",[107,142,35]],
-      ["brown",[120,72,35]],["tan",[210,180,140]],["beige",[220,208,186]],
-      ["red",[200,40,40]],["maroon",[128,0,0]],["orange",[240,140,30]],["gold",[218,165,32]],
-      ["yellow",[245,220,70]],["pink",[255,182,193]],["magenta",[255,0,255]],["purple",[128,0,128]]
+      ["black", [0, 0, 0]], ["white", [255, 255, 255]], ["gray", [128, 128, 128]], ["light gray", [200, 200, 200]],
+      ["navy", [0, 38, 77]], ["blue", [30, 90, 200]], ["royal blue", [65, 105, 225]], ["sky blue", [135, 206, 235]],
+      ["teal", [0, 128, 128]], ["green", [34, 139, 34]], ["lime", [150, 205, 50]], ["olive", [107, 142, 35]],
+      ["brown", [120, 72, 35]], ["tan", [210, 180, 140]], ["beige", [220, 208, 186]],
+      ["red", [200, 40, 40]], ["maroon", [128, 0, 0]], ["orange", [240, 140, 30]], ["gold", [218, 165, 32]],
+      ["yellow", [245, 220, 70]], ["pink", [255, 182, 193]], ["magenta", [255, 0, 255]], ["purple", [128, 0, 128]]
     ];
 
-    function nearestNamedColor(r,g,b) {
-      let best=Infinity,bestName="gray",bestHex="#808080";
-      for (const [name,[R,G,B]] of COLOR_PALETTE) {
-        const d=(R-r)**2+(G-g)**2+(B-b)**2;
-        if (d<best){best=d;bestName=name;bestHex=rgbToHex(R,G,B);}
+    function nearestNamedColor(r, g, b) {
+      let best = Infinity, bestName = "gray", bestHex = "#808080";
+      for (const [name, [R, G, B]] of COLOR_PALETTE) {
+        const d = (R - r) ** 2 + (G - g) ** 2 + (B - b) ** 2;
+        if (d < best) { best = d; bestName = name; bestHex = rgbToHex(R, G, B); }
       }
-      return {name:bestName,hex:bestHex};
+      return { name: bestName, hex: bestHex };
     }
 
-    function rgbToHex(r,g,b){return"#"+[r,g,b].map(x=>Math.round(x).toString(16).padStart(2,"0")).join("");}
+    function rgbToHex(r, g, b) {
+      return "#" + [r, g, b].map(x => Math.round(x).toString(16).padStart(2, "0")).join("");
+    }
 
     function toDanishColor(en) {
       const map = {
-        "black":"sort","white":"hvid","gray":"grå","light gray":"lysegrå",
-        "navy":"marineblå","blue":"blå","royal blue":"kongeblå","sky blue":"himmelblå",
-        "teal":"teal","green":"grøn","lime":"limegrøn","olive":"olivengrøn",
-        "brown":"brun","tan":"sandfarvet","beige":"beige",
-        "red":"rød","maroon":"bordeaux","orange":"orange","gold":"gylden",
-        "yellow":"gul","pink":"lyserød","magenta":"magenta","purple":"lilla"
+        "black": "sort", "white": "hvid", "gray": "grå", "light gray": "lysegrå",
+        "navy": "marineblå", "blue": "blå", "royal blue": "kongeblå", "sky blue": "himmelblå",
+        "teal": "teal", "green": "grøn", "lime": "limegrøn", "olive": "olivengrøn",
+        "brown": "brun", "tan": "sandfarvet", "beige": "beige",
+        "red": "rød", "maroon": "bordeaux", "orange": "orange", "gold": "gylden",
+        "yellow": "gul", "pink": "lyserød", "magenta": "magenta", "purple": "lilla"
       };
       return map[en] || en;
     }
