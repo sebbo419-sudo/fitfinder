@@ -1,8 +1,8 @@
 // netlify/functions/clarifai-proxy.js
 const fetch = globalThis.fetch;
 
-// Midlertidig upload via imgbb (gratis, uden konto)
-const IMGBB_API = "https://api.imgbb.com/1/upload?key=bb5b1fc0aef8c27c841b5b1c2c5934d1";
+// Midlertidig upload via imgbb (gratis)
+const IMGBB_API = `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`;
 
 export const handler = async (event) => {
   try {
