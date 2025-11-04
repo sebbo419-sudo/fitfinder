@@ -24,17 +24,27 @@ export const handler = async (event) => {
     const apparel = best?.name || "tøj";
 
     // 2️⃣ Upload billedet til imgbb for at få URL
-    const base64 = body.inputs?.[0]?.data?.image?.base64;
+    let base64 = body.inputs?.[0]?.data?.image?.base64;
     if (!base64) throw new Error("Intet billede fundet i forespørgslen");
-    const uploadResp = await fetch(IMGBB_API, {
-      method: "POST",
-      body: new URLSearchParams({ image: base64 })
-    });
-    const uploadData = await uploadResp.json();
-    const imageUrl = uploadData.data?.url;
-    if (!imageUrl) throw new Error("Kunne ikke uploade billede til imgbb");
 
-    // 3️⃣ Send til Hugging Face BLIP for beskrivelse
+    // Fjern evt. data-URL prefix
+    base64 = base64.replace(/^data:image\/\w+;base64,/, "");
+
+    const formData = new FormData();
+    formData.append("image", base64);
+
+    const uploadResp = await fetch(IMGBB_API, { method: "POST", body: formData });
+    const uploadData = await uploadResp.json();
+
+    if (!uploadData.success) {
+      console.error("imgbb upload error:", uploadData);
+      throw new Error(uploadData.error?.message || "imgbb upload mislykkedes");
+    }
+
+    const imageUrl = uploadData.data.url;
+    if (!imageUrl) throw new Error("Kunne ikke hente billed-URL fra imgbb");
+
+    // 3️⃣ Send til Hugging Face BLIP for billedbeskrivelse
     const hfResp = await fetch("https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -45,9 +55,11 @@ export const handler = async (event) => {
     if (hfResp.ok) {
       const hfData = await hfResp.json();
       caption = hfData?.[0]?.generated_text || hfData?.generated_text || null;
+    } else {
+      console.warn("Hugging Face fejlede:", await hfResp.text());
     }
 
-    // 4️⃣ Oversæt og formater
+    // 4️⃣ Oversæt og formater resultatet
     const finalDescription = await buildDescription(caption, apparel);
 
     return {
@@ -59,6 +71,7 @@ export const handler = async (event) => {
     console.error("Fejl i proxy:", err);
     return {
       statusCode: 500,
+      headers: { "Access-Control-Allow-Origin": "*" },
       body: JSON.stringify({ error: "Fejl i Clarifai-proxyen", details: err.message })
     };
   }
@@ -82,7 +95,7 @@ async function buildDescription(caption, apparel) {
   return `${capitalize(apparel)} – ${translated.charAt(0).toLowerCase() + translated.slice(1)}`;
 }
 
-// Gratis oversættelse
+// 🌍 Gratis oversættelse via MyMemory
 async function translateToDanish(englishText) {
   try {
     const resp = await fetch(
