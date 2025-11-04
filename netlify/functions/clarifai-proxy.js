@@ -1,7 +1,7 @@
 // netlify/functions/clarifai-proxy.js
 const fetch = globalThis.fetch;
 
-// Midlertidig upload via imgbb (gratis)
+// Upload via imgbb (kræver din egen nøgle i Netlify environment)
 const IMGBB_API = `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`;
 
 export const handler = async (event) => {
@@ -44,12 +44,20 @@ export const handler = async (event) => {
     const imageUrl = uploadData.data.url;
     if (!imageUrl) throw new Error("Kunne ikke hente billed-URL fra imgbb");
 
-    // 3️⃣ Send til Hugging Face BLIP for billedbeskrivelse
-    const hfResp = await fetch("https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ inputs: imageUrl })
-    });
+    // 3️⃣ Send til Hugging Face BLIP for billedbeskrivelse (nyt endpoint)
+    const hfHeaders = { "Content-Type": "application/json" };
+    if (process.env.HUGGINGFACE_API_KEY) {
+      hfHeaders["Authorization"] = `Bearer ${process.env.HUGGINGFACE_API_KEY}`;
+    }
+
+    const hfResp = await fetch(
+      "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large",
+      {
+        method: "POST",
+        headers: hfHeaders,
+        body: JSON.stringify({ inputs: imageUrl })
+      }
+    );
 
     let caption = null;
     if (hfResp.ok) {
