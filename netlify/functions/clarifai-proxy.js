@@ -45,7 +45,8 @@ export const handler = async (event) => {
     if (!imageUrl) throw new Error("Kunne ikke hente billed-URL fra imgbb");
 
     // 3️⃣ Send til Hugging Face BLIP for billedbeskrivelse (nyt router-endpoint)
-    let hfUrl = "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large";
+    let hfUrl = "https://router.huggingface.co/hf-inference/models/Salesforce/blip2-opt-2.7b";
+
     const hfHeaders = { "Content-Type": "application/json" };
 
     if (process.env.HUGGINGFACE_API_KEY) {
