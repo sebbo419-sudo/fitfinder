@@ -44,20 +44,24 @@ export const handler = async (event) => {
     const imageUrl = uploadData.data.url;
     if (!imageUrl) throw new Error("Kunne ikke hente billed-URL fra imgbb");
 
-    // 3️⃣ Send til Hugging Face BLIP for billedbeskrivelse (nyt endpoint)
+    // 3️⃣ Send til Hugging Face BLIP for billedbeskrivelse (nyt setup)
+    let hfUrl;
     const hfHeaders = { "Content-Type": "application/json" };
+
     if (process.env.HUGGINGFACE_API_KEY) {
+      // Brug privat token med v2 API
+      hfUrl = "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-large";
       hfHeaders["Authorization"] = `Bearer ${process.env.HUGGINGFACE_API_KEY}`;
+    } else {
+      // Fald tilbage til offentlig router (langsommere)
+      hfUrl = "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large";
     }
 
-    const hfResp = await fetch(
-      "https://router.huggingface.co/hf-inference/models/Salesforce/blip-image-captioning-large",
-      {
-        method: "POST",
-        headers: hfHeaders,
-        body: JSON.stringify({ inputs: imageUrl })
-      }
-    );
+    const hfResp = await fetch(hfUrl, {
+      method: "POST",
+      headers: hfHeaders,
+      body: JSON.stringify({ inputs: imageUrl })
+    });
 
     let caption = null;
     if (hfResp.ok) {
