@@ -4,26 +4,49 @@ const fetch = globalThis.fetch;
 // Upload via imgbb (kræver din egen nøgle i Netlify environment)
 const IMGBB_API = `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`;
 
+// Replicate CLIP model (text + image embeddings)
+const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
+const REPLICATE_CLIP_VERSION =
+  "108eb7dc5ef4392de2e885c219c2a2bdab552826bcbd3707987a967aa746d87e";
+
+// Cache til tekst-embeddings så vi ikke betaler for dem hver gang
+let FIT_TEXT_EMBEDDINGS_CACHE = null;
+let PATTERN_TEXT_EMBEDDINGS_CACHE = null;
+
 export const handler = async (event) => {
   try {
     const body = JSON.parse(event.body || "{}");
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
 
+    if (!clarifaiKey) {
+      throw new Error("CLARIFAI_API_KEY mangler i environment");
+    }
+    if (!process.env.IMGBB_API_KEY) {
+      throw new Error("IMGBB_API_KEY mangler i environment");
+    }
+    if (!REPLICATE_API_TOKEN) {
+      console.warn("REPLICATE_API_TOKEN mangler – CLIP fallback til regular/plain");
+    }
+
     // 1️⃣ Få tøjtype fra Clarifai
-    const clarifaiResp = await fetch("https://api.clarifai.com/v2/models/apparel-detection/outputs", {
-      method: "POST",
-      headers: {
-        "Authorization": `Key ${clarifaiKey}`,
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(body)
-    });
+    const clarifaiResp = await fetch(
+      "https://api.clarifai.com/v2/models/apparel-detection/outputs",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Key ${clarifaiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }
+    );
+
     const clarifaiData = await clarifaiResp.json();
     const concepts = clarifaiData.outputs?.[0]?.data?.concepts || [];
     const best = concepts.sort((a, b) => b.value - a.value)[0];
     const apparel = best?.name || "tøj";
 
-    // 2️⃣ Upload billedet til imgbb for at få URL
+    // 2️⃣ Upload billedet til imgbb
     let base64 = body.inputs?.[0]?.data?.image?.base64;
     if (!base64) throw new Error("Intet billede fundet i forespørgslen");
 
@@ -33,7 +56,11 @@ export const handler = async (event) => {
     const formData = new FormData();
     formData.append("image", base64);
 
-    const uploadResp = await fetch(IMGBB_API, { method: "POST", body: formData });
+    const uploadResp = await fetch(IMGBB_API, {
+      method: "POST",
+      body: formData,
+    });
+
     const uploadData = await uploadResp.json();
 
     if (!uploadData.success) {
@@ -44,82 +71,234 @@ export const handler = async (event) => {
     const imageUrl = uploadData.data.url;
     if (!imageUrl) throw new Error("Kunne ikke hente billed-URL fra imgbb");
 
-    // 3️⃣ Send til Hugging Face for billedbeskrivelse
-    let hfUrl = "https://router.huggingface.co/hf-inference/models/nlpconnect/vit-gpt2-image-captioning";
-    const hfHeaders = { "Content-Type": "application/json" };
+    // 3️⃣ Fit + mønster via CLIP (eller fallback hvis REPLICATE_API_TOKEN mangler)
+    const fit = REPLICATE_API_TOKEN
+      ? await inferFit(imageUrl)
+      : "regular";
+    const pattern = REPLICATE_API_TOKEN
+      ? await inferPattern(imageUrl)
+      : "plain";
 
-    if (process.env.HUGGINGFACE_API_KEY) {
-      hfHeaders["Authorization"] = `Bearer ${process.env.HUGGINGFACE_API_KEY}`;
-      console.log("Bruger Hugging Face router med API-nøgle ✅");
-    } else {
-      console.log("Bruger Hugging Face anonymt ⚠️");
-    }
-
-    const hfResp = await fetch(hfUrl, {
-      method: "POST",
-      headers: hfHeaders,
-      body: JSON.stringify({ inputs: imageUrl })
-    });
-
-    let caption = null;
-    if (hfResp.ok) {
-      const hfData = await hfResp.json();
-      caption = hfData?.[0]?.generated_text || hfData?.generated_text || null;
-    } else {
-      console.warn("Hugging Face fejlede:", await hfResp.text());
-    }
-
-    // 4️⃣ Oversæt og formater resultatet
-    const finalDescription = await buildDescription(caption, apparel);
+    // 4️⃣ Byg beskrivelse (caption fra Hugging Face er droppet for nu)
+    const finalDescription = await buildDescription(null, apparel, fit, pattern);
 
     return {
       statusCode: 200,
       headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ apparel, description: finalDescription })
+      body: JSON.stringify({
+        apparel,
+        fit,
+        pattern,
+        imageUrl,
+        description: finalDescription,
+      }),
     };
   } catch (err) {
     console.error("Fejl i proxy:", err);
     return {
       statusCode: 500,
       headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({ error: "Fejl i Clarifai-proxyen", details: err.message })
+      body: JSON.stringify({
+        error: "Fejl i Clarifai-proxyen",
+        details: err.message,
+      }),
     };
   }
 };
 
-// 🧠 Oversæt og lav pæn modebeskrivelse
-async function buildDescription(caption, apparel) {
-  const fallback = [
-    "med moderne snit",
-    "i klassisk pasform",
-    "i stilrent design",
-    "med afslappet look",
-    "i tidløs stil"
-  ];
+//
+// ------------------- CLIP HELPER -------------------
+//
 
-  if (!caption || caption.toLowerCase().includes("no")) {
-    return `${capitalize(apparel)} – ${fallback[Math.floor(Math.random() * fallback.length)]}`;
+async function callReplicateClip(input) {
+  if (!REPLICATE_API_TOKEN) {
+    throw new Error("REPLICATE_API_TOKEN ikke sat");
   }
 
-  const translated = await translateToDanish(caption);
-  return `${capitalize(apparel)} – ${translated.charAt(0).toLowerCase() + translated.slice(1)}`;
+  // Start prediction
+  const startResp = await fetch("https://api.replicate.com/v1/predictions", {
+    method: "POST",
+    headers: {
+      Authorization: `Token ${REPLICATE_API_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      version: REPLICATE_CLIP_VERSION,
+      input,
+    }),
+  });
+
+  if (!startResp.ok) {
+    const text = await startResp.text();
+    throw new Error("Replicate start-fejl: " + text);
+  }
+
+  let prediction = await startResp.json();
+
+  // Poll indtil den er færdig
+  while (prediction.status === "starting" || prediction.status === "processing") {
+    await sleep(700);
+    const pollResp = await fetch(prediction.urls.get, {
+      headers: {
+        Authorization: `Token ${REPLICATE_API_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+    prediction = await pollResp.json();
+  }
+
+  if (prediction.status !== "succeeded") {
+    throw new Error("Replicate prediction fejlede: " + prediction.status);
+  }
+
+  const output = prediction.output;
+  if (!output || !output.embedding) {
+    throw new Error("Replicate output uden embedding");
+  }
+
+  return output.embedding;
 }
 
-// 🌍 Gratis oversættelse via MyMemory
-async function translateToDanish(englishText) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function getImageEmbedding(imageUrl) {
+  return callReplicateClip({ image: imageUrl });
+}
+
+async function getTextEmbedding(text) {
+  return callReplicateClip({ text });
+}
+
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (!na || !nb) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+//
+// -------------- FIT VIA CLIP ----------------
+//
+
+const FIT_OPTIONS = [
+  { id: "oversized", text: "oversized loose fit sweater" },
+  { id: "regular", text: "regular fit sweater" },
+  { id: "slim", text: "slim fit sweater" },
+  { id: "relaxed", text: "relaxed fit sweatshirt with loose fit" },
+];
+
+async function inferFit(imageUrl) {
   try {
-    const resp = await fetch(
-      "https://api.mymemory.translated.net/get?q=" +
-        encodeURIComponent(englishText) +
-        "&langpair=en|da"
-    );
-    const data = await resp.json();
-    return data.responseData?.translatedText || englishText;
-  } catch {
-    return englishText;
+    const imageEmbedding = await getImageEmbedding(imageUrl);
+    if (!FIT_TEXT_EMBEDDINGS_CACHE) {
+      const embeddings = await Promise.all(
+        FIT_OPTIONS.map((opt) => getTextEmbedding(opt.text))
+      );
+      FIT_TEXT_EMBEDDINGS_CACHE = FIT_OPTIONS.map((opt, i) => ({
+        id: opt.id,
+        embedding: embeddings[i],
+      }));
+    }
+
+    let best = { id: "regular", score: -1 };
+    for (const opt of FIT_TEXT_EMBEDDINGS_CACHE) {
+      const score = cosineSimilarity(imageEmbedding, opt.embedding);
+      if (score > best.score) {
+        best = { id: opt.id, score };
+      }
+    }
+    console.log("CLIP fit:", best);
+    return best.id || "regular";
+  } catch (e) {
+    console.warn("inferFit fejl, fallback til regular:", e.message);
+    return "regular";
   }
 }
 
+//
+// -------------- PATTERN VIA CLIP ----------------
+//
+
+const PATTERN_OPTIONS = [
+  { id: "plain", text: "plain solid color fabric" },
+  { id: "striped", text: "striped fabric with visible stripes" },
+  { id: "checked", text: "checked plaid fabric pattern" },
+  { id: "floral", text: "floral patterned fabric with flowers" },
+  { id: "melange", text: "melange knit fabric texture" },
+  { id: "printed", text: "graphic printed fabric with graphics" },
+];
+
+async function inferPattern(imageUrl) {
+  try {
+    const imageEmbedding = await getImageEmbedding(imageUrl);
+    if (!PATTERN_TEXT_EMBEDDINGS_CACHE) {
+      const embeddings = await Promise.all(
+        PATTERN_OPTIONS.map((opt) => getTextEmbedding(opt.text))
+      );
+      PATTERN_TEXT_EMBEDDINGS_CACHE = PATTERN_OPTIONS.map((opt, i) => ({
+        id: opt.id,
+        embedding: embeddings[i],
+      }));
+    }
+
+    let best = { id: "plain", score: -1 };
+    for (const opt of PATTERN_TEXT_EMBEDDINGS_CACHE) {
+      const score = cosineSimilarity(imageEmbedding, opt.embedding);
+      if (score > best.score) {
+        best = { id: opt.id, score };
+      }
+    }
+    console.log("CLIP pattern:", best);
+    return best.id || "plain";
+  } catch (e) {
+    console.warn("inferPattern fejl, fallback til plain:", e.message);
+    return "plain";
+  }
+}
+
+//
+// -------------------- Beskrivelse --------------------
+//
+async function buildDescription(caption, apparel, fit, pattern) {
+  const FIT_LABELS_DA = {
+    oversized: "oversized fit",
+    regular: "regular fit",
+    slim: "slim fit",
+    relaxed: "løstsiddende pasform",
+  };
+
+  const PATTERN_LABELS_DA = {
+    plain: "uden mønster",
+    striped: "med striber",
+    checked: "med tern",
+    floral: "med blomsterprint",
+    melange: "i meleret strik",
+    printed: "med print",
+  };
+
+  const fitText = FIT_LABELS_DA[fit] || "regular fit";
+  const patternText = PATTERN_LABELS_DA[pattern] || "";
+
+  // Simpel dansk modebeskrivelse – du kan tweake den her
+  // caption er pt. null, men beholdes hvis du senere vil tilføje noget ekstra
+  let desc = `${capitalize(apparel)} i ${fitText}`;
+  if (patternText) desc += " " + patternText;
+
+  return desc;
+}
+
+//
+// ---------------- utils ----------------
+//
 function capitalize(str) {
   return str ? str.charAt(0).toUpperCase() + str.slice(1) : str;
 }
