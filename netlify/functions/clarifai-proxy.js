@@ -1,15 +1,17 @@
 // netlify/functions/clarifai-proxy.js
 const fetch = globalThis.fetch;
 
-// Upload via imgbb (kræver din egen nøgle i Netlify environment)
-const IMGBB_API = `https://api.imgbb.com/1/upload?key=${process.env.IMGBB_API_KEY}`;
+// Supabase config (Storage)
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || "images";
 
 // Replicate CLIP model (text + image embeddings)
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 const REPLICATE_CLIP_VERSION =
   "108eb7dc5ef4392de2e885c219c2a2bdab552826bcbd3707987a967aa746d87e";
 
-// Cache til tekst-embeddings så vi ikke betaler for dem hver gang
+// Cache til tekst-embeddings (så vi ikke betaler for dem hver gang)
 let FIT_TEXT_EMBEDDINGS_CACHE = null;
 let PATTERN_TEXT_EMBEDDINGS_CACHE = null;
 
@@ -21,8 +23,8 @@ export const handler = async (event) => {
     if (!clarifaiKey) {
       throw new Error("CLARIFAI_API_KEY mangler i environment");
     }
-    if (!process.env.IMGBB_API_KEY) {
-      throw new Error("IMGBB_API_KEY mangler i environment");
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+      throw new Error("SUPABASE_URL eller SUPABASE_SERVICE_KEY mangler i environment");
     }
     if (!REPLICATE_API_TOKEN) {
       console.warn("REPLICATE_API_TOKEN mangler – CLIP fallback til regular/plain");
@@ -46,32 +48,17 @@ export const handler = async (event) => {
     const best = concepts.sort((a, b) => b.value - a.value)[0];
     const apparel = best?.name || "tøj";
 
-    // 2️⃣ Upload billedet til imgbb
+    // 2️⃣ Hent base64 fra request
     let base64 = body.inputs?.[0]?.data?.image?.base64;
     if (!base64) throw new Error("Intet billede fundet i forespørgslen");
 
     // Fjern evt. data-URL prefix
     base64 = base64.replace(/^data:image\/\w+;base64,/, "");
 
-    const formData = new FormData();
-    formData.append("image", base64);
+    // 3️⃣ Upload til Supabase Storage og få en offentlig URL
+    const imageUrl = await uploadImageToSupabase(base64);
 
-    const uploadResp = await fetch(IMGBB_API, {
-      method: "POST",
-      body: formData,
-    });
-
-    const uploadData = await uploadResp.json();
-
-    if (!uploadData.success) {
-      console.error("imgbb upload error:", uploadData);
-      throw new Error(uploadData.error?.message || "imgbb upload mislykkedes");
-    }
-
-    const imageUrl = uploadData.data.url;
-    if (!imageUrl) throw new Error("Kunne ikke hente billed-URL fra imgbb");
-
-    // 3️⃣ Fit + mønster via CLIP (eller fallback hvis REPLICATE_API_TOKEN mangler)
+    // 4️⃣ Fit + mønster via CLIP (eller fallback hvis REPLICATE_API_TOKEN mangler)
     const fit = REPLICATE_API_TOKEN
       ? await inferFit(imageUrl)
       : "regular";
@@ -79,7 +66,7 @@ export const handler = async (event) => {
       ? await inferPattern(imageUrl)
       : "plain";
 
-    // 4️⃣ Byg beskrivelse (caption fra Hugging Face er droppet for nu)
+    // 5️⃣ Byg beskrivelse
     const finalDescription = await buildDescription(null, apparel, fit, pattern);
 
     return {
@@ -105,6 +92,46 @@ export const handler = async (event) => {
     };
   }
 };
+
+//
+// ------------------- Supabase upload -------------------
+//
+
+async function uploadImageToSupabase(base64) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    throw new Error("Supabase config mangler");
+  }
+
+  const buffer = Buffer.from(base64, "base64");
+  const fileName =
+    "outfits/" +
+    Date.now() +
+    "-" +
+    Math.random().toString(36).slice(2) +
+    ".jpg";
+
+  const url = `${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${fileName}`;
+
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      "Content-Type": "image/jpeg",
+    },
+    body: buffer,
+  });
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    console.error("Supabase upload fejl:", text);
+    throw new Error("Supabase upload fejlede: " + text);
+  }
+
+  // Hvis bucket er public, er dette den offentlige URL
+  const publicUrl = `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${fileName}`;
+  return publicUrl;
+}
 
 //
 // ------------------- CLIP HELPER -------------------
@@ -288,8 +315,6 @@ async function buildDescription(caption, apparel, fit, pattern) {
   const fitText = FIT_LABELS_DA[fit] || "regular fit";
   const patternText = PATTERN_LABELS_DA[pattern] || "";
 
-  // Simpel dansk modebeskrivelse – du kan tweake den her
-  // caption er pt. null, men beholdes hvis du senere vil tilføje noget ekstra
   let desc = `${capitalize(apparel)} i ${fitText}`;
   if (patternText) desc += " " + patternText;
 
