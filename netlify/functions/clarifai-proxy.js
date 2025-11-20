@@ -1,5 +1,4 @@
-// netlify/functions/clarifai-proxy.js
-const fetch = globalThis.fetch;
+// pages/api/clarifai-proxy.js
 
 // Supabase config (Storage)
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -15,9 +14,21 @@ const REPLICATE_CLIP_VERSION =
 let FIT_TEXT_EMBEDDINGS_CACHE = null;
 let PATTERN_TEXT_EMBEDDINGS_CACHE = null;
 
-export const handler = async (event) => {
+export const config = {
+  api: {
+    bodyParser: {
+      sizeLimit: "10mb", // så base64 billeder ikke fejler
+    },
+  },
+};
+
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Only POST allowed" });
+  }
+
   try {
-    const body = JSON.parse(event.body || "{}");
+    const body = req.body;
     const clarifaiKey = process.env.CLARIFAI_API_KEY;
 
     if (!clarifaiKey) {
@@ -59,39 +70,27 @@ export const handler = async (event) => {
     const imageUrl = await uploadImageToSupabase(base64);
 
     // 4️⃣ Fit + mønster via CLIP (eller fallback hvis REPLICATE_API_TOKEN mangler)
-    const fit = REPLICATE_API_TOKEN
-      ? await inferFit(imageUrl)
-      : "regular";
-    const pattern = REPLICATE_API_TOKEN
-      ? await inferPattern(imageUrl)
-      : "plain";
+    const fit = REPLICATE_API_TOKEN ? await inferFit(imageUrl) : "regular";
+    const pattern = REPLICATE_API_TOKEN ? await inferPattern(imageUrl) : "plain";
 
     // 5️⃣ Byg beskrivelse
     const finalDescription = await buildDescription(null, apparel, fit, pattern);
 
-    return {
-      statusCode: 200,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        apparel,
-        fit,
-        pattern,
-        imageUrl,
-        description: finalDescription,
-      }),
-    };
+    return res.status(200).json({
+      apparel,
+      fit,
+      pattern,
+      imageUrl,
+      description: finalDescription,
+    });
   } catch (err) {
     console.error("Fejl i proxy:", err);
-    return {
-      statusCode: 500,
-      headers: { "Access-Control-Allow-Origin": "*" },
-      body: JSON.stringify({
-        error: "Fejl i Clarifai-proxyen",
-        details: err.message,
-      }),
-    };
+    return res.status(500).json({
+      error: "Fejl i Clarifai-proxyen",
+      details: err.message,
+    });
   }
-};
+}
 
 //
 // ------------------- Supabase upload -------------------
