@@ -60,7 +60,7 @@
       text-align: left;
       box-shadow: 0 3px 8px rgba(0,0,0,0.1);
       animation: fadeIn 0.5s ease-in-out forwards;
-      max-width: 280px;
+      max-width: 320px;
     }
 
     #dot {
@@ -130,7 +130,7 @@
 
   <div id="card">
     <span id="dot"></span>
-    <p id="resultText"></p>
+    <div id="resultText"></div>
   </div>
 
   <canvas id="work" style="display:none;"></canvas>
@@ -147,6 +147,9 @@
     const resultText = document.getElementById("resultText");
     const aiBarContainer = document.getElementById("aiBarContainer");
     const aiBar = document.getElementById("aiBar");
+
+    // API path - in dev you can set to http://localhost:3000/api/clarifai-proxy
+    const API_PATH = (location.hostname === "localhost") ? "http://localhost:3000/api/clarifai-proxy" : "/api/clarifai-proxy";
 
     imageInput.addEventListener("change", () => {
       const f = imageInput.files[0];
@@ -179,7 +182,8 @@
       }, 400);
 
       try {
-        const resp = await fetch("/.netlify/functions/clarifai-proxy", {
+        // <-- HER er ændringen: ny API-route på Vercel -->
+        const resp = await fetch(API_PATH, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ inputs: [{ data: { image: { base64 } } }] }),
@@ -191,10 +195,32 @@
         setTimeout(() => aiBarContainer.style.display = "none", 600);
         loadingEl.textContent = "";
 
-        if (!data.description) {
+        if (!data || data.error) {
+          console.error("API error:", data);
           resultText.textContent = "AI'en kunne ikke beskrive tøjet.";
         } else {
-          resultText.textContent = data.description;
+          // Brug de nye felter vi returnerer
+          const desc = data.description || "";
+          const apparel = data.apparel || "";
+          const fit = data.fit || "";
+          const pattern = data.pattern || "";
+          const imageUrl = data.imageUrl || imgEl.src; // fallback til lokal preview
+
+          // Opbyg pæn tekst
+          let lines = [];
+          if (desc) lines.push(desc);
+          else {
+            if (apparel) lines.push(capitalize(apparel));
+            if (fit) lines.push("Fit: " + fit);
+            if (pattern) lines.push("Mønster: " + pattern);
+          }
+          resultText.textContent = lines.join("\n");
+
+          // Vis den faktiske offentlige URL (fra Supabase) hvis tilgængelig
+          if (imageUrl) {
+            imgEl.src = imageUrl;
+            preview.style.display = "block";
+          }
         }
 
         dot.style.background = "#999";
@@ -214,6 +240,11 @@
         r.onerror = reject;
         r.readAsDataURL(file);
       });
+    }
+
+    function capitalize(str) {
+      if (!str) return "";
+      return str.charAt(0).toUpperCase() + str.slice(1);
     }
   });
   </script>
